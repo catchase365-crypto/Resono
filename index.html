@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>Kinetic Resonance Console</title>
+  <style>
+    :root {
+      --font-stack: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+      --bg-dark: #080a10;
+      --card-bg: rgba(18, 22, 34, 0.45);
+      --card-border: rgba(255, 255, 255, 0.12);
+      --text-main: #f3f4f6;
+      --text-sub: #9ca3af;
+      --accent: #0ea5e9;
+      --cursor-x: 50%;
+      --cursor-y: 50%;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+
+    body {
+      background-color: var(--bg-dark);
+      font-family: var(--font-stack);
+      color: var(--text-main);
+      min-height: 100vh;
+      overflow-x: hidden;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+
+    /* === 流体毛玻璃环境背景（五色弥散球） === */
+    .fluid-background {
+      position: fixed;
+      inset: 0;
+      overflow: hidden;
+      pointer-events: none;
+      z-index: 0;
+      background: var(--bg-dark);
+    }
+
+    .circle-blob {
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(max(70px, 8vw));
+      opacity: 0.55;
+      mix-blend-mode: screen;
+      transform: translate(-50%, -50%);
+      will-change: transform;
+    }
+
+    /* 左上：祖母绿 (Emerald Green) */
+    .blob-emerald {
+      top: 10%;
+      left: 10%;
+      width: max(55vw, 55vh);
+      height: max(55vw, 55vh);
+      background: radial-gradient(circle, #10b981 0%, rgba(16, 185, 129, 0) 70%);
+    }
+
+    /* 右上：紫罗兰 (Violet) */
+    .blob-violet {
+      top: 12%;
+      left: 90%;
+      width: max(60vw, 60vh);
+      height: max(60vw, 60vh);
+      background: radial-gradient(circle, #8b5cf6 0%, rgba(139, 92, 246, 0) 70%);
+    }
+
+    /* 正中：海蓝 (Sea Blue) */
+    .blob-seablue {
+      top: 50%;
+      left: 50%;
+      width: max(65vw, 65vh);
+      height: max(65vw, 65vh);
+      background: radial-gradient(circle, #0ea5e9 0%, rgba(14, 165, 233, 0) 70%);
+    }
+
+    /* 左下：洋红 (Magenta) */
+    .blob-magenta {
+      top: 88%;
+      left: 12%;
+      width: max(58vw, 58vh);
+      height: max(58vw, 58vh);
+      background: radial-gradient(circle, #ec4899 0%, rgba(236, 72, 153, 0) 70%);
+    }
+
+    /* 右下：橙黄 (Orange-Yellow) */
+    .blob-orangeyellow {
+      top: 88%;
+      left: 88%;
+      width: max(52vw, 52vh);
+      height: max(52vw, 52vh);
+      background: radial-gradient(circle, #f59e0b 0%, rgba(245, 158, 11, 0) 70%);
+    }
+
+    #fieldCanvas {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      display: block;
+      z-index: 10;
+      touch-action: none;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="fluid-background">
+    <div class="circle-blob blob-emerald"></div>
+    <div class="circle-blob blob-violet"></div>
+    <div class="circle-blob blob-seablue"></div>
+    <div class="circle-blob blob-magenta"></div>
+    <div class="circle-blob blob-orangeyellow"></div>
+  </div>
+
+  <canvas id="fieldCanvas"></canvas>
+
+  <script>
+    (function () {
+      window.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+      window.addEventListener('touchstart', (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
+
+      // 2. 原生 Web Audio API 合成器系统
+      let audioCtx = null;
+      let masterGain = null;
+      let isAudioInit = false;
+
+      function initAudio() {
+        if (isAudioInit) return;
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        audioCtx = new AudioContext();
+        masterGain = audioCtx.createGain();
+        masterGain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+
+        // 主低通滤波平滑刺耳高频
+        const filter = audioCtx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(2400, audioCtx.currentTime);
+        filter.Q.setValueAtTime(3, audioCtx.currentTime);
+
+        masterGain.connect(filter);
+        filter.connect(audioCtx.destination);
+        isAudioInit = true;
+      }
+
+      // 五声音阶频率基底 (C4, D4, E4, G4, A4, C5, D5, E5, G5)
+      const PENTATONIC = [261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 587.33, 659.25, 783.99];
+
+      function triggerResonance(normX, normY, velocity) {
+        if (!audioCtx) return;
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+
+        const index = Math.floor(normX * PENTATONIC.length);
+        const baseFreq = PENTATONIC[Math.min(index, PENTATONIC.length - 1)];
+        const detuneOffset = (normY - 0.5) * 25; // 根据纵坐标微调调谐
+        const targetFreq = baseFreq + detuneOffset;
+
+        const osc = audioCtx.createOscillator();
+        const voiceGain = audioCtx.createGain();
+        const pan = audioCtx.createStereoPanner ? audioCtx.createStereoPanner() : null;
+
+        osc.type = velocity > 15 ? 'sawtooth' : 'sine';
+        osc.frequency.setValueAtTime(targetFreq, audioCtx.currentTime);
+
+        const now = audioCtx.currentTime;
+        const attack = 0.02;
+        const decay = Math.min(Math.max(velocity * 0.08, 0.4), 1.6);
+        const peakGain = Math.min(velocity * 0.03 + 0.05, 0.4);
+
+        voiceGain.gain.setValueAtTime(0.001, now);
+        voiceGain.gain.linearRampToValueAtTime(peakGain, now + attack);
+        voiceGain.gain.exponentialRampToValueAtTime(0.0001, now + decay);
+
+        if (pan) {
+          pan.pan.setValueAtTime((normX - 0.5) * 1.8, now);
+          osc.connect(voiceGain);
+          voiceGain.connect(pan);
+          pan.connect(masterGain);
+        } else {
+          osc.connect(voiceGain);
+          voiceGain.connect(masterGain);
+        }
+
+        osc.start(now);
+        osc.stop(now + decay);
+      }
+
+      // 3. 动力学点阵 Canvas 渲染器
+      const canvas = document.getElementById('fieldCanvas');
+      const ctx = canvas.getContext('2d', { alpha: true });
+      let width, height, dpr;
+      let particles = [];
+      const SPACING = 20;
+      const POINTER_RADIUS = 100;
+
+      const pointer = {
+        x: -9999,
+        y: -9999,
+        prevX: -9999,
+        prevY: -9999,
+        vx: 0,
+        vy: 0,
+        speed: 0,
+        isDown: false
+      };
+
+      class LatticeNode {
+        constructor(x, y) {
+          this.baseX = x;
+          this.baseY = y;
+          this.x = x;
+          this.y = y;
+          this.vx = 0;
+          this.vy = 0;
+          this.mass = 1.2;
+          this.k = 0.04;      // 弹簧回弹系数
+          this.friction = 0.88; // 摩擦阻尼
+        }
+
+        update(pX, pY, pSpeed) {
+          // 弹簧回位胡克定律
+          const dxHome = this.baseX - this.x;
+          const dyHome = this.baseY - this.y;
+          this.vx += dxHome * this.k;
+          this.vy += dyHome * this.k;
+
+          // 指针力场排斥作用
+          const dxP = this.x - pX;
+          const dyP = this.y - pY;
+          const distSq = dxP * dxP + dyP * dyP;
+          const radiusSq = POINTER_RADIUS * POINTER_RADIUS;
+
+          if (distSq < radiusSq && distSq > 0.01) {
+            const dist = Math.sqrt(distSq);
+            const force = (1 - dist / POINTER_RADIUS) * (pSpeed * 0.4 + 4.5);
+            const angle = Math.atan2(dyP, dxP);
+            this.vx += Math.cos(angle) * force;
+            this.vy += Math.sin(angle) * force;
+          }
+
+          this.vx *= this.friction;
+          this.vy *= this.friction;
+          this.x += this.vx;
+          this.y += this.vy;
+        }
+
+        draw(ctx) {
+          const shift = Math.hypot(this.x - this.baseX, this.y - this.baseY);
+          const ratio = Math.min(shift / 24, 1);
+
+          // 依据应力变形量做动态色彩映射 (蓝 -> 翠绿 -> 荧光粉)
+          ctx.beginPath();
+          ctx.arc(Math.round(this.x), Math.round(this.y), 1.6 + ratio * 2.0, 0, Math.PI * 2);
+          ctx.fillStyle = ratio > 0.6 
+            ? `rgba(236, 72, 153, ${0.4 + ratio * 0.6})`
+            : `rgba(14, 165, 233, ${0.25 + ratio * 0.75})`;
+          ctx.fill();
+
+          if (ratio > 0.3) {
+            ctx.beginPath();
+            ctx.moveTo(this.baseX, this.baseY);
+            ctx.lineTo(this.x, this.y);
+            ctx.strokeStyle = `rgba(16, 185, 129, ${ratio * 0.4})`;
+            ctx.lineWidth = 1;
+            ctx.stroke();
+          }
+        }
+      }
+
+      function initGrid() {
+        dpr = window.devicePixelRatio || 1;
+        width = window.innerWidth;
+        height = window.innerHeight;
+
+        canvas.width = Math.floor(width * dpr);
+        canvas.height = Math.floor(height * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        particles = [];
+        const cols = Math.floor(width / SPACING);
+        const rows = Math.floor(height / SPACING);
+        const offsetX = (width - cols * SPACING) / 2 + SPACING / 2;
+        const offsetY = (height - rows * SPACING) / 2 + SPACING / 2;
+
+        for (let i = 0; i <= cols; i++) {
+          for (let j = 0; j <= rows; j++) {
+            particles.push(new LatticeNode(offsetX + i * SPACING, offsetY + j * SPACING));
+          }
+        }
+      }
+
+      window.addEventListener('resize', initGrid);
+      initGrid();
+
+      // 4. 指针与触控流
+      let lastAudioTriggerTime = 0;
+
+      function handlePointer(clientX, clientY) {
+        initAudio();
+        const curX = clientX;
+        const curY = clientY;
+
+        if (pointer.prevX !== -9999) {
+          pointer.vx = curX - pointer.prevX;
+          pointer.vy = curY - pointer.prevY;
+          pointer.speed = Math.hypot(pointer.vx, pointer.vy);
+        }
+
+        pointer.x = curX;
+        pointer.y = curY;
+        pointer.prevX = curX;
+        pointer.prevY = curY;
+
+        const now = performance.now();
+        if (pointer.speed > 3.5 && (now - lastAudioTriggerTime > 65)) {
+          const normX = Math.max(0, Math.min(1, curX / width));
+          const normY = Math.max(0, Math.min(1, curY / height));
+          triggerResonance(normX, normY, pointer.speed);
+          lastAudioTriggerTime = now;
+        }
+      }
+
+      function resetPointer() {
+        pointer.x = -9999;
+        pointer.y = -9999;
+        pointer.prevX = -9999;
+        pointer.prevY = -9999;
+        pointer.speed = 0;
+      }
+
+      canvas.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        handlePointer(e.clientX, e.clientY);
+        triggerResonance(e.clientX / width, e.clientY / height, 20);
+      }, { passive: false });
+
+      canvas.addEventListener('pointermove', (e) => {
+        e.preventDefault();
+        handlePointer(e.clientX, e.clientY);
+      }, { passive: false });
+
+      canvas.addEventListener('pointerup', resetPointer);
+      canvas.addEventListener('pointercancel', resetPointer);
+      canvas.addEventListener('pointerleave', resetPointer);
+
+      // 5. 渲染循环与性能监测
+      let lastFrame = performance.now();
+      let framesCount = 0;
+      let fpsTimer = 0;
+
+      function renderLoop(time) {
+        const dt = time - lastFrame;
+        lastFrame = time;
+
+
+
+        // 速度自然阻尼衰减
+        pointer.speed *= 0.92;
+
+        ctx.clearRect(0, 0, width, height);
+
+        for (let i = 0; i < particles.length; i++) {
+          particles[i].update(pointer.x, pointer.y, pointer.speed);
+          particles[i].draw(ctx);
+        }
+
+        requestAnimationFrame(renderLoop);
+      }
+
+      requestAnimationFrame(renderLoop);
+    })();
+  </script>
+</body>
+</html>
